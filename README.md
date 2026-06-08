@@ -1,4 +1,4 @@
-# Kiro & Agy Bridge (Chat Selector CLI)
+# Chats compartidos de Kiro-Cli y Antigravity-Cli
 
 Este es un script en Python (`select_chat.py`) que funciona como un puente e interfaz unificada (TUI) para gestionar conversaciones entre dos asistentes de IA de terminal:
 * **Kiro** (`kiro-cli`)
