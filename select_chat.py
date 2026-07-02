@@ -963,21 +963,30 @@ _CLR_TITLE     = 11  # título de conversación
 _CLR_ACTION    = 12  # botones de acción
 
 def _init_colors():
+    if not curses.has_colors():
+        return
     curses.start_color()
-    curses.use_default_colors()
     bg = -1
-    curses.init_pair(_CLR_HEADER,    curses.COLOR_CYAN,    bg)
-    curses.init_pair(_CLR_SELECTED,  curses.COLOR_BLACK,   curses.COLOR_CYAN)
-    curses.init_pair(_CLR_KIRO,      curses.COLOR_YELLOW,  bg)
-    curses.init_pair(_CLR_AGY,       curses.COLOR_GREEN,   bg)
-    curses.init_pair(_CLR_BOTH,      curses.COLOR_MAGENTA, bg)
-    curses.init_pair(_CLR_DIM,       8,                    bg)   # gray
-    curses.init_pair(_CLR_PREVIEW_U, curses.COLOR_CYAN,    bg)
-    curses.init_pair(_CLR_PREVIEW_A, curses.COLOR_GREEN,   bg)
-    curses.init_pair(_CLR_STATUS,    curses.COLOR_BLACK,   curses.COLOR_BLUE)
-    curses.init_pair(_CLR_SEARCH,    curses.COLOR_BLACK,   curses.COLOR_YELLOW)
-    curses.init_pair(_CLR_TITLE,     curses.COLOR_WHITE,   bg)
-    curses.init_pair(_CLR_ACTION,    curses.COLOR_BLACK,   curses.COLOR_GREEN)
+    try:
+        curses.use_default_colors()
+    except curses.error:
+        bg = curses.COLOR_BLACK
+    
+    try:
+        curses.init_pair(_CLR_HEADER,    curses.COLOR_CYAN,    bg)
+        curses.init_pair(_CLR_SELECTED,  curses.COLOR_BLACK,   curses.COLOR_CYAN)
+        curses.init_pair(_CLR_KIRO,      curses.COLOR_YELLOW,  bg)
+        curses.init_pair(_CLR_AGY,       curses.COLOR_GREEN,   bg)
+        curses.init_pair(_CLR_BOTH,      curses.COLOR_MAGENTA, bg)
+        curses.init_pair(_CLR_DIM,       8,                    bg)   # gray
+        curses.init_pair(_CLR_PREVIEW_U, curses.COLOR_CYAN,    bg)
+        curses.init_pair(_CLR_PREVIEW_A, curses.COLOR_GREEN,   bg)
+        curses.init_pair(_CLR_STATUS,    curses.COLOR_BLACK,   curses.COLOR_BLUE)
+        curses.init_pair(_CLR_SEARCH,    curses.COLOR_BLACK,   curses.COLOR_YELLOW)
+        curses.init_pair(_CLR_TITLE,     curses.COLOR_WHITE,   bg)
+        curses.init_pair(_CLR_ACTION,    curses.COLOR_BLACK,   curses.COLOR_GREEN)
+    except curses.error:
+        pass
 
 def _safe_addstr(win, y, x, text, attr=0):
     """Escribe texto ignorando errores de desbordamiento de pantalla."""
@@ -1005,7 +1014,7 @@ def _tag_str(session):
     else:
         return (" ● AGY  ", _CLR_AGY)
 
-def _draw_list_panel(win, sessions, selected, scroll_off, search_query):
+def _draw_list_panel(win, sessions, selected, scroll_off, search_query, is_deep_search=False):
     """Renderiza el panel izquierdo: lista de conversaciones."""
     h, w = win.getmaxyx()
     win.erase()
@@ -1053,7 +1062,7 @@ def _draw_list_panel(win, sessions, selected, scroll_off, search_query):
     # Barra inferior: búsqueda / stats
     bar_y = h - 2
     if search_query:
-        mode_str = "🔍 [BÚSQUEDA PROFUNDA]" if getattr(win, "is_deep_search", False) else "🔍"
+        mode_str = "🔍 [BÚSQUEDA PROFUNDA]" if is_deep_search else "🔍"
         bar = f" {mode_str} {search_query}  [{len(sessions)} resultados]"
         _safe_addstr(win, bar_y, 0, bar.ljust(w - 1),
                      curses.color_pair(_CLR_SEARCH) | curses.A_BOLD)
@@ -1265,7 +1274,10 @@ def _run_action_dialog(session):
 
 def _tui(stdscr, all_sessions):
     """Función principal del TUI curses."""
-    curses.curs_set(0)
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
     curses.set_escdelay(50)
     _init_colors()
     stdscr.keypad(True)
@@ -1311,8 +1323,7 @@ def _tui(stdscr, all_sessions):
 
         cur_session = filtered[selected] if filtered else None
 
-        list_win.is_deep_search = is_deep_search
-        _draw_list_panel(list_win, filtered, selected, scroll_off, search_query)
+        _draw_list_panel(list_win, filtered, selected, scroll_off, search_query, is_deep_search)
         _draw_preview_panel(prev_win, cur_session)
 
         list_win.noutrefresh()
@@ -1423,7 +1434,10 @@ def main():
     while True:
         try:
             result = curses.wrapper(_tui, all_sessions)
-        except Exception:
+        except Exception as e:
+            _log_error(f"Error in curses wrapper: {e}")
+            import traceback
+            _log_error(traceback.format_exc())
             result = None
 
         if result is None:
