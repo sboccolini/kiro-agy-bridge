@@ -8,6 +8,18 @@ import re
 import sys
 import json
 import glob
+
+try:
+    from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                                QHBoxLayout, QLineEdit, QTableWidget, QTableWidgetItem, 
+                                QAbstractItemView, QTextEdit, QPushButton, QLabel, QHeaderView)
+    from PyQt6.QtCore import Qt, QTimer
+    from PyQt6.QtGui import QColor, QFont
+except ImportError:
+    import sys
+    print("\n[!] Error: PyQt6 no está instalado.")
+    print("    Por favor instalalo usando: pip install PyQt6")
+    sys.exit(1)
 import shutil
 import uuid
 import sqlite3
@@ -945,481 +957,199 @@ def show_detail(session):
             input("Presiona Enter para continuar...")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TUI con curses
+# ─────────────────────────────────────────────────────────────────────────────
+# GUI con PyQt6
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Paleta de colores curses (índices de par)
-_CLR_HEADER    = 1   # título principal
-_CLR_SELECTED  = 2   # fila seleccionada
-_CLR_KIRO      = 3   # badge Kiro
-_CLR_AGY       = 4   # badge Agy
-_CLR_BOTH      = 5   # badge Kiro+Agy
-_CLR_DIM       = 6   # texto gris
-_CLR_PREVIEW_U = 7   # mensaje usuario en preview
-_CLR_PREVIEW_A = 8   # mensaje asistente en preview
-_CLR_STATUS    = 9   # barra de estado
-_CLR_SEARCH    = 10  # barra de búsqueda activa
-_CLR_TITLE     = 11  # título de conversación
-_CLR_ACTION    = 12  # botones de acción
+class ChatSelectorGUI(QMainWindow):
+    def __init__(self, sessions):
+        super().__init__()
+        self.sessions = sessions
+        self.filtered = sessions[:]
+        self.selected_session = None
+        self.selected_action = None
+        
+        self.setWindowTitle("Selector de Chats - Kiro & Antigravity")
+        self.resize(1100, 700)
+        self.setStyleSheet("""
+            QMainWindow { background-color: #1e1e2e; }
+            QLineEdit { background-color: #313244; color: white; border-radius: 15px; padding: 5px 15px; font-size: 14px; border: 1px solid #45475a; }
+            QTableWidget { background-color: #181825; color: #cdd6f4; gridline-color: #313244; border: none; font-size: 13px; }
+            QTableWidget::item:selected { background-color: #45475a; }
+            QHeaderView::section { background-color: #11111b; color: #a6adc8; padding: 5px; border: none; font-weight: bold; }
+            QTextEdit { background-color: #1e1e2e; color: #cdd6f4; border: 1px solid #313244; border-radius: 5px; padding: 10px; font-size: 14px; }
+            QPushButton { background-color: #313244; color: white; border-radius: 15px; padding: 8px 20px; font-weight: bold; border: 1px solid #45475a; }
+            QPushButton:hover { background-color: #45475a; }
+            QLabel { color: #a6adc8; }
+        """)
+        
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QVBoxLayout(main_widget)
+        
+        header_layout = QHBoxLayout()
+        self.search_bar = QLineEdit()
+        self.search_bar.setPlaceholderText("🔍 Buscar palabra o contenido en el chat...")
+        self.search_bar.setFixedWidth(400)
+        self.search_bar.textChanged.connect(self.on_search_changed)
+        
+        title_label = QLabel("<b>Selector de Chats</b><br><span style='font-size:11px'>Kiro & Antigravity</span>")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        header_layout.addWidget(self.search_bar)
+        header_layout.addStretch()
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+        
+        split_layout = QHBoxLayout()
+        
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Fecha", "Origen", "Título / Primer Mensaje"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.itemSelectionChanged.connect(self.on_selection_changed)
+        self.table.doubleClicked.connect(self.on_double_click)
+        split_layout.addWidget(self.table, stretch=2)
+        
+        self.preview = QTextEdit()
+        self.preview.setReadOnly(True)
+        split_layout.addWidget(self.preview, stretch=3)
+        
+        layout.addLayout(split_layout)
+        
+        footer_layout = QHBoxLayout()
+        self.status_label = QLabel(f"Cargadas {len(sessions)} conversaciones.")
+        footer_layout.addWidget(self.status_label)
+        footer_layout.addStretch()
+        
+        self.btn_rename = QPushButton("✏️ Renombrar")
+        self.btn_rename.clicked.connect(self.rename_current)
+        self.btn_rename.setStyleSheet("QPushButton { background-color: #313244; color: #cba6f7; border: 1px solid #cba6f7; } QPushButton:hover { background-color: #45475a; }")
+        footer_layout.addWidget(self.btn_rename)
 
-def _init_colors():
-    if not curses.has_colors():
-        return
-    curses.start_color()
-    bg = -1
-    try:
-        curses.use_default_colors()
-    except curses.error:
-        bg = curses.COLOR_BLACK
-    
-    try:
-        curses.init_pair(_CLR_HEADER,    curses.COLOR_CYAN,    bg)
-        curses.init_pair(_CLR_SELECTED,  curses.COLOR_BLACK,   curses.COLOR_CYAN)
-        curses.init_pair(_CLR_KIRO,      curses.COLOR_YELLOW,  bg)
-        curses.init_pair(_CLR_AGY,       curses.COLOR_GREEN,   bg)
-        curses.init_pair(_CLR_BOTH,      curses.COLOR_MAGENTA, bg)
-        curses.init_pair(_CLR_DIM,       8,                    bg)   # gray
-        curses.init_pair(_CLR_PREVIEW_U, curses.COLOR_CYAN,    bg)
-        curses.init_pair(_CLR_PREVIEW_A, curses.COLOR_GREEN,   bg)
-        curses.init_pair(_CLR_STATUS,    curses.COLOR_BLACK,   curses.COLOR_BLUE)
-        curses.init_pair(_CLR_SEARCH,    curses.COLOR_BLACK,   curses.COLOR_YELLOW)
-        curses.init_pair(_CLR_TITLE,     curses.COLOR_WHITE,   bg)
-        curses.init_pair(_CLR_ACTION,    curses.COLOR_BLACK,   curses.COLOR_GREEN)
-    except curses.error:
-        pass
+        self.btn_agy = QPushButton("Continuar en Agy")
+        self.btn_kiro = QPushButton("Continuar en Kiro")
+        self.btn_agy.clicked.connect(lambda: self.trigger_action(ord('a')))
+        self.btn_kiro.clicked.connect(lambda: self.trigger_action(ord('k')))
+        
+        self.btn_agy.setStyleSheet("QPushButton { background-color: #2e4a3b; color: #a6e3a1; border: 1px solid #a6e3a1; } QPushButton:hover { background-color: #3b5a48; } QPushButton:disabled { background-color: #1e1e2e; color: #45475a; border-color: #45475a; }")
+        self.btn_kiro.setStyleSheet("QPushButton { background-color: #4a452e; color: #f9e2af; border: 1px solid #f9e2af; } QPushButton:hover { background-color: #5a553e; } QPushButton:disabled { background-color: #1e1e2e; color: #45475a; border-color: #45475a; }")
+        
+        footer_layout.addWidget(self.btn_agy)
+        footer_layout.addWidget(self.btn_kiro)
+        layout.addLayout(footer_layout)
+        
+        self.search_timer = QTimer()
+        self.search_timer.setSingleShot(True)
+        self.search_timer.timeout.connect(self.perform_search)
+        
+        self.populate_table()
 
-def _safe_addstr(win, y, x, text, attr=0):
-    """Escribe texto ignorando errores de desbordamiento de pantalla."""
-    h, w = win.getmaxyx()
-    if y < 0 or y >= h or x < 0 or x >= w:
-        return
-    available = w - x
-    if available <= 0:
-        return
-    try:
-        win.addstr(y, x, text[:available], attr)
-    except curses.error:
-        pass
+    def on_search_changed(self, text):
+        self.search_timer.start(300)
+        
+    def perform_search(self):
+        query = self.search_bar.text().lower()
+        if not query:
+            self.filtered = self.sessions[:]
+        else:
+            self.filtered = search_in_content(self.sessions, query)
+        self.populate_table()
+        self.status_label.setText(f"Resultados: {len(self.filtered)} de {len(self.sessions)} conversaciones.")
 
-def _draw_hline(win, y, x, length, char="─", attr=0):
-    _safe_addstr(win, y, x, char * length, attr)
+    def rename_current(self):
+        if not self.selected_session: return
+        from PyQt6.QtWidgets import QInputDialog
+        new_title, ok = QInputDialog.getText(self, "Renombrar", "Nuevo título:", text=self.selected_session.get("title", ""))
+        if ok and new_title.strip():
+            new_title = new_title.strip()
+            if rename_session(self.selected_session, new_title):
+                self.selected_session["title"] = new_title
+                self.populate_table()
 
-def _tag_str(session):
-    in_k = session.get("in_kiro", False)
-    in_a = session.get("in_agy",  False)
-    if in_k and in_a:
-        return (" ⬡ KIRO+AGY ", _CLR_BOTH)
-    elif in_k:
-        return (" ● KIRO ", _CLR_KIRO)
-    else:
-        return (" ● AGY  ", _CLR_AGY)
-
-def _draw_list_panel(win, sessions, selected, scroll_off, search_query, is_deep_search=False):
-    """Renderiza el panel izquierdo: lista de conversaciones."""
-    h, w = win.getmaxyx()
-    win.erase()
-
-    # Cabecera
-    header = " 💬 CONVERSACIONES"
-    _safe_addstr(win, 0, 0, header.ljust(w), curses.color_pair(_CLR_HEADER) | curses.A_BOLD)
-
-    row = 1
-    visible = h - 3  # filas disponibles para ítems
-    for i in range(scroll_off, min(scroll_off + visible, len(sessions))):
-        s = sessions[i]
-        is_sel = (i == selected)
-
-        tag_str, tag_clr = _tag_str(s)
-        time_str = format_time(s["timestamp"])
-        title = s["title"] or "Sin título"
-
-        # Barra de selección de fondo
-        base_attr = curses.color_pair(_CLR_SELECTED) if is_sel else 0
-        _safe_addstr(win, row, 0, " " * (w - 1), base_attr)
-
-        # Flecha de selección
-        arrow = "▶ " if is_sel else "  "
-        _safe_addstr(win, row, 0, arrow, base_attr | curses.A_BOLD)
-
-        # Badge de agente
-        tag_attr = (curses.color_pair(_CLR_SELECTED) if is_sel
-                    else curses.color_pair(tag_clr) | curses.A_BOLD)
-        _safe_addstr(win, row, 2, tag_str, tag_attr)
-
-        # Título
-        title_x   = 2 + len(tag_str)
-        max_title = max(0, w - title_x - len(time_str) - 2)
-        title_disp = title[:max_title]
-        title_attr = base_attr | curses.A_BOLD
-        _safe_addstr(win, row, title_x, title_disp, title_attr)
-
-        # Fecha (alineada a la derecha)
-        time_x = w - len(time_str) - 1
-        _safe_addstr(win, row, time_x, time_str,
-                     base_attr | curses.color_pair(_CLR_DIM))
-        row += 1
-
-    # Barra inferior: búsqueda / stats
-    bar_y = h - 2
-    if search_query:
-        mode_str = "🔍 [BÚSQUEDA PROFUNDA]" if is_deep_search else "🔍"
-        bar = f" {mode_str} {search_query}  [{len(sessions)} resultados]"
-        _safe_addstr(win, bar_y, 0, bar.ljust(w - 1),
-                     curses.color_pair(_CLR_SEARCH) | curses.A_BOLD)
-    else:
-        bar = f"  {len(sessions)} chats │ / buscar │ s buscar en texto │ ↑↓ navegar │ Enter elegir │ q salir"
-        _safe_addstr(win, bar_y, 0, bar.ljust(w - 1),
-                     curses.color_pair(_CLR_STATUS))
-
-def _draw_preview_panel(win, session):
-    """Renderiza el panel derecho: detalle y preview del chat seleccionado."""
-    h, w = win.getmaxyx()
-    win.erase()
-
-    if session is None:
-        _safe_addstr(win, h // 2, max(0, w // 2 - 8), "Sin selección",
-                     curses.color_pair(_CLR_DIM))
-        return
-
-    row = 0
-
-    # ── Cabecera con título ───────────────────────────────────────────────
-    tag_str, tag_clr = _tag_str(session)
-    hdr_attr = curses.color_pair(_CLR_HEADER) | curses.A_BOLD
-    _safe_addstr(win, row, 0, " DETALLE ".center(w), hdr_attr)
-    row += 1
-
-    title = session.get("title", "Sin título")
-    for line in textwrap.wrap(title, w - 2):
-        _safe_addstr(win, row, 1, line, curses.A_BOLD | curses.color_pair(_CLR_TITLE))
-        row += 1
-    row += 1
-
-    # ── Metadatos ─────────────────────────────────────────────────────────
-    dim = curses.color_pair(_CLR_DIM)
-    bold = curses.A_BOLD
-
-    tag_attr = curses.color_pair(tag_clr) | curses.A_BOLD
-    _safe_addstr(win, row, 1, "Sistema  ", dim)
-    _safe_addstr(win, row, 10, tag_str.strip(), tag_attr)
-    row += 1
-
-    _safe_addstr(win, row, 1, "Fecha    ", dim)
-    _safe_addstr(win, row, 10, format_time(session.get("timestamp", 0)), bold)
-    row += 1
-
-    cwd = session.get("cwd", "")
-    _safe_addstr(win, row, 1, "Dir      ", dim)
-    _safe_addstr(win, row, 10, cwd[:w - 11])
-    row += 1
-
-    short_id = session.get("id", "")[:20] + "…"
-    _safe_addstr(win, row, 1, "ID       ", dim)
-    _safe_addstr(win, row, 10, short_id, dim)
-    row += 2
-
-    # ── Separador ─────────────────────────────────────────────────────────
-    _draw_hline(win, row, 0, w - 1, "─", dim)
-    row += 1
-    _safe_addstr(win, row, 1, "Diálogo reciente", dim | curses.A_BOLD)
-    row += 1
-    _draw_hline(win, row, 0, w - 1, "─", dim)
-    row += 1
-
-    # ── Preview de mensajes ───────────────────────────────────────────────
-    preview = get_chat_preview(session)
-    recent  = preview[-6:] if preview else []
-    if not recent:
-        _safe_addstr(win, row, 2, "(sin mensajes registrados)", dim)
-        row += 1
-    else:
-        for msg in recent:
-            if row >= h - 3:
-                break
-            if msg["role"] == "user":
-                prefix = "👤 "
-                attr   = curses.color_pair(_CLR_PREVIEW_U) | curses.A_BOLD
+    def populate_table(self):
+        self.table.setRowCount(0)
+        for row, s in enumerate(self.filtered):
+            self.table.insertRow(row)
+            
+            from datetime import datetime
+            time_str = datetime.fromtimestamp(s.get("timestamp", 0)).strftime("%Y-%m-%d %H:%M:%S")
+            
+            in_k = s.get("in_kiro")
+            in_a = s.get("in_agy")
+            if in_k and in_a:
+                tag = "Kiro+Agy"
+                color = QColor("#cba6f7") # Magenta
+            elif in_k:
+                tag = "Kiro"
+                color = QColor("#f9e2af") # Yellow
             else:
-                prefix = "🤖 "
-                attr   = curses.color_pair(_CLR_PREVIEW_A)
+                tag = "Agy"
+                color = QColor("#a6e3a1") # Green
+                
+            title = s.get("title", "")
+            
+            item_date = QTableWidgetItem(time_str)
+            item_tag = QTableWidgetItem(tag)
+            item_tag.setForeground(color)
+            item_title = QTableWidgetItem(title)
+            
+            item_date.setFlags(item_date.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            item_tag.setFlags(item_tag.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            item_title.setFlags(item_title.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            
+            self.table.setItem(row, 0, item_date)
+            self.table.setItem(row, 1, item_tag)
+            self.table.setItem(row, 2, item_title)
+            
+        if self.filtered:
+            self.table.selectRow(0)
 
-            text = msg["text"].strip().replace("\n", " ")
-            full = prefix + text
-            for wrapped_line in textwrap.wrap(full, w - 3):
-                if row >= h - 3:
-                    break
-                _safe_addstr(win, row, 1, wrapped_line, attr)
-                row += 1
-            row += 1
-
-    # ── Barra de acciones ─────────────────────────────────────────────────
-    action_y = h - 2
-    _draw_hline(win, action_y - 1, 0, w - 1, "─", dim)
-    in_k = session.get("in_kiro", False)
-    in_a = session.get("in_agy",  False)
-    agy_hint  = "a→Agy" + ("✓" if in_a else "+ctx")
-    kiro_hint = "k→Kiro" + ("✓" if in_k else "+sync")
-    hint = f"  [ {agy_hint} ]  [ {kiro_hint} ]  [ Esc volver ]"
-    _safe_addstr(win, action_y, 0, hint.ljust(w - 1),
-                 curses.color_pair(_CLR_STATUS))
-
-
-def _run_action_dialog(session):
-    """
-    Muestra un diálogo de acción simple (sin curses) después de salir del modo TUI.
-    Retorna 'back' o 'quit'.
-    """
-    in_kiro = session.get("in_kiro", False)
-    in_agy  = session.get("in_agy",  False)
-
-    while True:
-        os.system("clear")
-
-        # Cabecera compacta
-        title    = session.get("title", "Sin título")
-        tag_str, _ = _tag_str(session)
-        sys_tag  = tag_str.strip()
-        time_str = format_time(session.get("timestamp", 0))
-        cwd      = session.get("cwd", "")
-
-        print(f"\n{C_BOLD}{C_CYAN}  {'─' * 56}{C_RESET}")
-        print(f"{C_BOLD}  {title[:54]}{C_RESET}")
-        print(f"{C_GRAY}  {sys_tag}  │  {time_str}  │  {cwd[:36]}{C_RESET}")
-        print(f"{C_BOLD}{C_CYAN}  {'─' * 56}{C_RESET}\n")
-
-        # Preview corto
+    def on_selection_changed(self):
+        selected = self.table.selectedItems()
+        if not selected:
+            self.btn_agy.setEnabled(False)
+            self.btn_kiro.setEnabled(False)
+            self.btn_rename.setEnabled(False)
+            self.preview.setHtml("")
+            return
+            
+        row = selected[0].row()
+        session = self.filtered[row]
+        self.selected_session = session
+        
+        self.btn_agy.setEnabled(True)
+        self.btn_kiro.setEnabled(True)
+        self.btn_rename.setEnabled(True)
+        
         preview = get_chat_preview(session)
-        for msg in preview[-4:]:
-            if msg["role"] == "user":
-                icon, col = "👤", C_CYAN
-            else:
-                icon, col = "🤖", C_GREEN
-            txt = msg["text"].strip().replace("\n", " ")[:60]
-            print(f"  {icon} {col}{txt}{C_RESET}")
+        html = f"<h3 style='color:#89b4fa; margin-top:0;'>{session.get('title')}</h3>"
         if not preview:
-            print(f"  {C_GRAY}(sin mensajes){C_RESET}")
-        print()
-
-        # Opciones
-        if in_agy:
-            print(f"  {C_BOLD}{C_GREEN}[a]{C_RESET}  Abrir con Agy   ✅")
+            html += "<p style='color:#a6adc8'><i>(Sin mensajes)</i></p>"
         else:
-            print(f"  {C_BOLD}{C_GREEN}[a]{C_RESET}  Abrir con Agy   {C_YELLOW}(se inyectará historial de Kiro){C_RESET}")
+            for msg in preview[-15:]:
+                role = "👤" if msg["role"] == "user" else "🤖"
+                col = "#a6e3a1" if msg["role"] == "assistant" else "#89b4fa"
+                text = msg["text"].replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+                html += f"<p><b>{role}</b> <span style='color:{col}'>{text}</span></p><hr style='border: 0; height: 1px; background-color: #313244;'/>"
+        
+        self.preview.setHtml(html)
 
-        if in_kiro:
-            print(f"  {C_BOLD}{C_YELLOW}[k]{C_RESET}  Abrir con Kiro  ✅")
-        else:
-            print(f"  {C_BOLD}{C_YELLOW}[k]{C_RESET}  Abrir con Kiro  {C_CYAN}(se sincronizará historial de Agy){C_RESET}")
+    def on_double_click(self):
+        if not self.selected_session: return
+        in_agy = self.selected_session.get("in_agy")
+        self.trigger_action(ord('a') if in_agy else ord('k'))
 
-        print(f"  {C_BOLD}{C_MAGENTA}[r]{C_RESET}  Renombrar chat")
-        print(f"  {C_BOLD}{C_GRAY}[Esc/b]{C_RESET} Volver")
-        print(f"  {C_BOLD}{C_RED}[q]{C_RESET}  Salir")
-        print()
-
-        try:
-            ans = input(f"{C_BOLD}  ¿Qué hacemos? > {C_RESET}").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return "back"
-
-        if ans == "r":
-            try:
-                new_title = input(f"\n{C_BOLD}  Nuevo título: {C_RESET}").strip()
-                if new_title:
-                    if rename_session(session, new_title):
-                        session["title"] = new_title
-                        print(f"{C_GREEN}  ✅ Guardado. Volviendo...{C_RESET}")
-                        import time; time.sleep(1)
-            except (EOFError, KeyboardInterrupt):
-                pass
-            continue
-
-        if ans in ("a", "1"):
-            cwd = ensure_cwd(session)
-            if not cwd:
-                continue
-            if in_kiro:
-                print(f"\n{C_CYAN}📜 Preparando historial de Kiro para Agy...{C_RESET}")
-                sync_kiro_to_agy(session)
-                ctx = build_kiro_context(session)
-                if ctx:
-                    launch_agy(session["id"], cwd, context_prompt=ctx, has_real_agy=in_agy)
-                else:
-                    launch_agy(session["id"], cwd)
-            else:
-                launch_agy(session["id"], cwd)
-
-        elif ans in ("k", "2"):
-            cwd = ensure_cwd(session)
-            if not cwd:
-                continue
-            if in_agy:
-                print(f"\n{C_CYAN}📜 Sincronizando historial de Agy → Kiro...{C_RESET}")
-                ok, msg = sync_agy_to_kiro(session)
-                if ok:
-                    print(f"{C_GREEN}✅ {msg}{C_RESET}")
-                    launch_kiro(session["id"], cwd)
-                else:
-                    print(f"{C_RED}❌ {msg}{C_RESET}")
-                    input("Presiona Enter para continuar...")
-            else:
-                launch_kiro(session["id"], cwd)
-
-        elif ans in ("b", "q", "", "\x1b"):
-            return "quit" if ans == "q" else "back"
-
-        else:
-            print(f"{C_RED}  Opción no válida.{C_RESET}")
-            import time; time.sleep(0.8)
-
-
-def _tui(stdscr, all_sessions):
-    """Función principal del TUI curses."""
-    try:
-        curses.curs_set(0)
-    except curses.error:
-        pass
-    curses.set_escdelay(50)
-    _init_colors()
-    stdscr.keypad(True)
-
-    sessions     = all_sessions[:]
-    filtered     = sessions[:]
-    selected     = 0
-    scroll_off   = 0
-    search_mode  = False
-    is_deep_search = False
-    search_query = ""
-    pending_action = None   # sesión a procesar fuera de curses
-
-    while True:
-        h, w = stdscr.getmaxyx()
-
-        # Panel izquierdo: lista (40% del ancho mínimo 30 cols)
-        list_w   = max(30, min(w // 2, 52))
-        prev_w   = max(1, w - list_w - 1)
-        list_h   = h
-        prev_h   = h
-
-        # Crear ventanas
-        list_win = curses.newwin(list_h, list_w, 0, 0)
-        sep_win  = curses.newwin(h, 1, 0, list_w)
-        prev_win = curses.newwin(prev_h, prev_w, 0, list_w + 1)
-
-        # Separador vertical
-        for row in range(h):
-            try:
-                sep_win.addstr(row, 0, "│", curses.color_pair(_CLR_DIM))
-            except curses.error:
-                pass
-
-        # Calcular scroll
-        visible = list_h - 3
-        if visible < 1:
-            visible = 1
-        if selected < scroll_off:
-            scroll_off = selected
-        elif selected >= scroll_off + visible:
-            scroll_off = selected - visible + 1
-
-        cur_session = filtered[selected] if filtered else None
-
-        _draw_list_panel(list_win, filtered, selected, scroll_off, search_query, is_deep_search)
-        _draw_preview_panel(prev_win, cur_session)
-
-        list_win.noutrefresh()
-        sep_win.noutrefresh()
-        prev_win.noutrefresh()
-        curses.doupdate()
-
-        key = stdscr.getch()
-
-        # ── Modo búsqueda ────────────────────────────────────────────────
-        if search_mode:
-            if key in (curses.KEY_ENTER, 10, 13, 27):   # Enter / Esc
-                search_mode = False
-            elif key in (curses.KEY_BACKSPACE, 127, 8):
-                search_query = search_query[:-1]
-                q = search_query.lower()
-                if q:
-                    filtered = search_in_content(sessions, q) if is_deep_search else [s for s in sessions if q in s.get("title", "").lower() or q in s.get("cwd", "").lower()]
-                else:
-                    filtered = sessions[:]
-                selected  = 0
-                scroll_off = 0
-            elif 32 <= key <= 126:
-                search_query += chr(key)
-                q = search_query.lower()
-                if is_deep_search:
-                    filtered = search_in_content(sessions, q)
-                else:
-                    filtered = [s for s in sessions if q in s.get("title", "").lower() or q in s.get("cwd", "").lower()]
-                selected  = 0
-                scroll_off = 0
-            continue
-
-        # ── Teclas de navegación ─────────────────────────────────────────
-        if key == curses.KEY_UP or key == ord('k'):
-            if selected > 0:
-                selected -= 1
-
-        elif key == curses.KEY_DOWN or key == ord('j'):
-            if selected < len(filtered) - 1:
-                selected += 1
-
-        elif key == curses.KEY_PPAGE:   # Page Up
-            selected = max(0, selected - visible)
-
-        elif key == curses.KEY_NPAGE:   # Page Down
-            selected = min(len(filtered) - 1, selected + visible)
-
-        elif key == curses.KEY_HOME or key == ord('g'):
-            selected = 0
-
-        elif key == curses.KEY_END or key == ord('G'):
-            selected = max(0, len(filtered) - 1)
-
-        elif key == ord('s'):
-            search_mode  = True
-            is_deep_search = True
-            search_query = ""
-            filtered     = sessions[:]
-            selected     = 0
-            scroll_off   = 0
-
-        elif key == ord('/'):
-            search_mode  = True
-            is_deep_search = False
-            search_query = ""
-            filtered     = sessions[:]
-            selected     = 0
-            scroll_off   = 0
-
-        elif key == 27:  # Esc
-            if search_query:
-                search_query = ""
-                filtered     = sessions[:]
-                selected     = 0
-                scroll_off   = 0
-
-        elif key in (curses.KEY_ENTER, 10, 13, ord('a'), ord('k')) and filtered:
-            pending_action = (filtered[selected], key)
-            break
-
-        elif key in (ord('q'), ord('Q')):
-            pending_action = None
-            break
-
-    return pending_action
-
-ERROR_LOG = "/tmp/select_chat_error.log"
-
-def _log_error(msg):
-    """Escribe el error en un archivo log para diagnóstico."""
-    import traceback as _tb
-    with open(ERROR_LOG, "a", encoding="utf-8") as f:
-        from datetime import datetime as _dt
-        f.write(f"\n{'='*60}\n{_dt.now().isoformat()}\n{msg}\n")
-        f.write(_tb.format_exc())
+    def trigger_action(self, key):
+        if self.selected_session:
+            self.selected_action = key
+            self.close()
 
 def main():
     kiro_list    = get_kiro_sessions()
@@ -1431,111 +1161,72 @@ def main():
         input("\nPresiona Enter para salir...")
         sys.exit(0)
 
-    while True:
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+
+    win = ChatSelectorGUI(all_sessions)
+    win.show()
+    app.exec()
+    
+    if win.selected_action and win.selected_session:
+        result = (win.selected_session, win.selected_action)
+    else:
+        result = None
+
+    if result is None:
+        sys.exit(0)
+
+    session, key = result
+    in_kiro = session.get("in_kiro", False)
+    in_agy  = session.get("in_agy",  False)
+
+    if key == ord('a'):
         try:
-            result = curses.wrapper(_tui, all_sessions)
-        except Exception as e:
-            _log_error(f"Error in curses wrapper: {e}")
-            import traceback
-            _log_error(traceback.format_exc())
-            result = None
-
-        if result is None:
-            os.system("clear")
-            print("\n  Saliendo...")
-            sys.exit(0)
-
-        session, key = result
-        in_kiro = session.get("in_kiro", False)
-        in_agy  = session.get("in_agy",  False)
-
-        # Si se presionó 'a' o 'k' directamente desde la lista, ir directo
-        if key == ord('a'):
-            try:
-                cwd = ensure_cwd(session)
-                if cwd:
-                    if in_kiro:
-                        os.system("clear")
-                        print(f"\n{C_CYAN}📜 Preparando historial de Kiro para Agy...{C_RESET}")
-                        sync_kiro_to_agy(session)
-                        ctx = build_kiro_context(session)
-                        if ctx:
-                            launch_agy(session["id"], cwd, context_prompt=ctx, has_real_agy=in_agy)
-                        else:
-                            launch_agy(session["id"], cwd)
+            cwd = ensure_cwd(session)
+            if cwd:
+                if in_kiro:
+                    os.system("clear")
+                    print(f"\n{C_CYAN}📜 Preparando historial de Kiro para Agy...{C_RESET}")
+                    sync_kiro_to_agy(session)
+                    ctx = build_kiro_context(session)
+                    if ctx:
+                        launch_agy(session["id"], cwd, context_prompt=ctx, has_real_agy=in_agy)
                     else:
                         launch_agy(session["id"], cwd)
-            except Exception as e:
-                _log_error(str(e))
-                os.system("clear")
-                print(f"{C_RED}\n❌ Error abriendo con Agy: {e}{C_RESET}")
-                print(f"{C_GRAY}  Detalle en: {ERROR_LOG}{C_RESET}")
-                input("  Presiona Enter para continuar...")
+                else:
+                    launch_agy(session["id"], cwd)
+        except Exception as e:
+            print(f"{C_RED}\n❌ Error abriendo con Agy: {e}{C_RESET}")
+            input("  Presiona Enter para continuar...")
 
-        elif key == ord('k'):
-            try:
-                cwd = ensure_cwd(session)
-                if cwd:
-                    if in_agy:
-                        os.system("clear")
-                        print(f"\n{C_CYAN}📜 Sincronizando historial de Agy → Kiro...{C_RESET}")
-                        ok, msg = sync_agy_to_kiro(session)
-                        if ok:
-                            print(f"{C_GREEN}✅ {msg}{C_RESET}")
-                            launch_kiro(session["id"], cwd)
-                        else:
-                            print(f"{C_RED}❌ {msg}{C_RESET}")
-                            input("Presiona Enter para continuar...")
-                    else:
+    elif key == ord('k'):
+        try:
+            cwd = ensure_cwd(session)
+            if cwd:
+                if in_agy:
+                    os.system("clear")
+                    print(f"\n{C_CYAN}📜 Sincronizando historial de Agy → Kiro...{C_RESET}")
+                    ok, msg = sync_agy_to_kiro(session)
+                    if ok:
+                        print(f"{C_GREEN}✅ {msg}{C_RESET}")
                         launch_kiro(session["id"], cwd)
-            except Exception as e:
-                _log_error(str(e))
-                os.system("clear")
-                print(f"{C_RED}\n❌ Error abriendo con Kiro: {e}{C_RESET}")
-                print(f"{C_GRAY}  Detalle en: {ERROR_LOG}{C_RESET}")
-                input("  Presiona Enter para continuar...")
-
-        else:
-            # Enter → mostrar diálogo de acción
-            try:
-                action_result = _run_action_dialog(session)
-            except Exception as e:
-                _log_error(str(e))
-                os.system("clear")
-                print(f"{C_RED}\n❌ Error en el diálogo: {e}{C_RESET}")
-                print(f"{C_GRAY}  Detalle en: {ERROR_LOG}{C_RESET}")
-                input("  Presiona Enter para continuar...")
-                continue
-            if action_result == "quit":
-                os.system("clear")
-                print("\n  Saliendo...")
-                sys.exit(0)
-            # "back" → volver al TUI
-
-
-# ─── Punto de entrada ─────────────────────────────────────────────────────────
-
-# ─── Punto de entrada ─────────────────────────────────────────────────────────
+                    else:
+                        print(f"{C_RED}❌ {msg}{C_RESET}")
+                        input("Presiona Enter para continuar...")
+                else:
+                    launch_kiro(session["id"], cwd)
+        except Exception as e:
+            print(f"{C_RED}\n❌ Error abriendo con Kiro: {e}{C_RESET}")
+            input("  Presiona Enter para continuar...")
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        os.system("clear")
-        print("\n  Saliendo...")
         sys.exit(0)
     except Exception as e:
-        # Restaurar terminal por si curses lo dejó sucio
-        try:
-            import curses as _curses
-            _curses.endwin()
-        except Exception:
-            pass
-        os.system("clear")
-        _log_error(str(e))
-        print(f"{C_RED}\n❌ Error inesperado: {e}{C_RESET}")
-        print(f"{C_GRAY}  Detalle en: {ERROR_LOG}{C_RESET}")
-        print()
+        import traceback
+        traceback.print_exc()
         input("  Presiona Enter para salir...")
         sys.exit(1)
-
