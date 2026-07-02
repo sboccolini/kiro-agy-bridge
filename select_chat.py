@@ -805,14 +805,27 @@ def _restore_terminal():
     _os.system("stty sane 2>/dev/null")
 
 def _exec_agent(name, args):
-    """Reemplaza el proceso actual con el agente. Maneja errores de forma visible."""
+    """Reemplaza el proceso actual con el agente. Si no hay terminal (GUI puro), abre una nueva."""
+    import sys, subprocess, shlex
     try:
+        if not sys.stdout.isatty():
+            # Ejecutado sin terminal de fondo (ej. desde acceso directo)
+            cmd_str = " ".join([shlex.quote(a) for a in args])
+            subprocess.Popen(["gnome-terminal", "--", "bash", "-c", f"{cmd_str}; exec bash"])
+            sys.exit(0)
+            
         _restore_terminal()
         os.execlp(name, *args)
     except FileNotFoundError:
         # Intentar desde ~/.local/bin/
         local_path = os.path.expanduser(f"~/.local/bin/{name}")
         try:
+            if not sys.stdout.isatty():
+                args[0] = local_path
+                cmd_str = " ".join([shlex.quote(a) for a in args])
+                subprocess.Popen(["gnome-terminal", "--", "bash", "-c", f"{cmd_str}; exec bash"])
+                sys.exit(0)
+                
             _restore_terminal()
             os.execl(local_path, *args)
         except Exception as e:
