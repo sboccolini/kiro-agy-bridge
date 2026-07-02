@@ -212,6 +212,74 @@ def merge_sessions(kiro_list, agy_list):
 
     return sorted(merged.values(), key=lambda x: x["timestamp"], reverse=True)
 
+# ─── Búsqueda profunda y Renombrar ─────────────────────────────────────────────
+
+def search_in_content(sessions, query):
+    q = query.lower()
+    matched = []
+    for s in sessions:
+        found = False
+        sid = s["id"]
+        
+        # Check Kiro JSONL
+        kiro_path = os.path.join(KIRO_SESSIONS_DIR, f"{sid}.jsonl")
+        if os.path.isfile(kiro_path):
+            try:
+                with open(kiro_path, "r", encoding="utf-8") as f:
+                    if q in f.read().lower():
+                        matched.append(s)
+                        found = True
+            except Exception:
+                pass
+                
+        # Check Agy Transcript
+        if not found:
+            agy_path = os.path.join(AGY_BRAIN_DIR, sid, ".system_generated", "logs", "transcript.jsonl")
+            if os.path.isfile(agy_path):
+                try:
+                    with open(agy_path, "r", encoding="utf-8") as f:
+                        if q in f.read().lower():
+                            matched.append(s)
+                except Exception:
+                    pass
+    return matched
+
+def rename_session(session, new_title):
+    import time
+    sid = session["id"]
+    success = False
+    
+    # Rename in Kiro
+    kiro_json = os.path.join(KIRO_SESSIONS_DIR, f"{sid}.json")
+    if os.path.isfile(kiro_json):
+        try:
+            with open(kiro_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["title"] = new_title
+            with open(kiro_json, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            success = True
+        except Exception:
+            pass
+
+    # Rename in Agy (append to history.jsonl)
+    if os.path.isfile(AGY_HISTORY):
+        try:
+            ws = session.get("cwd", "")
+            entry = {
+                "conversationId": sid,
+                "timestamp": int(time.time() * 1000),
+                "display": new_title,
+                "workspace": ws
+            }
+            with open(AGY_HISTORY, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+            success = True
+        except Exception:
+            pass
+            
+    return success
+
 # ─── Vista previa del chat ────────────────────────────────────────────────────
 
 def get_chat_preview(session):
@@ -985,11 +1053,12 @@ def _draw_list_panel(win, sessions, selected, scroll_off, search_query):
     # Barra inferior: búsqueda / stats
     bar_y = h - 2
     if search_query:
-        bar = f" 🔍 {search_query}  [{len(sessions)} resultados]"
+        mode_str = "🔍 [BÚSQUEDA PROFUNDA]" if getattr(win, "is_deep_search", False) else "🔍"
+        bar = f" {mode_str} {search_query}  [{len(sessions)} resultados]"
         _safe_addstr(win, bar_y, 0, bar.ljust(w - 1),
                      curses.color_pair(_CLR_SEARCH) | curses.A_BOLD)
     else:
-        bar = f"  {len(sessions)} conversaciones  │  / para buscar  │  ↑↓ navegar  │  Enter seleccionar  │  q salir"
+        bar = f"  {len(sessions)} chats │ / buscar │ s buscar en texto │ ↑↓ navegar │ Enter elegir │ q salir"
         _safe_addstr(win, bar_y, 0, bar.ljust(w - 1),
                      curses.color_pair(_CLR_STATUS))
 
@@ -1133,6 +1202,7 @@ def _run_action_dialog(session):
         else:
             print(f"  {C_BOLD}{C_YELLOW}[k]{C_RESET}  Abrir con Kiro  {C_CYAN}(se sincronizará historial de Agy){C_RESET}")
 
+        print(f"  {C_BOLD}{C_MAGENTA}[r]{C_RESET}  Renombrar chat")
         print(f"  {C_BOLD}{C_GRAY}[Esc/b]{C_RESET} Volver")
         print(f"  {C_BOLD}{C_RED}[q]{C_RESET}  Salir")
         print()
@@ -1141,6 +1211,18 @@ def _run_action_dialog(session):
             ans = input(f"{C_BOLD}  ¿Qué hacemos? > {C_RESET}").strip().lower()
         except (EOFError, KeyboardInterrupt):
             return "back"
+
+        if ans == "r":
+            try:
+                new_title = input(f"\n{C_BOLD}  Nuevo título: {C_RESET}").strip()
+                if new_title:
+                    if rename_session(session, new_title):
+                        session["title"] = new_title
+                        print(f"{C_GREEN}  ✅ Guardado. Volviendo...{C_RESET}")
+                        import time; time.sleep(1)
+            except (EOFError, KeyboardInterrupt):
+                pass
+            continue
 
         if ans in ("a", "1"):
             cwd = ensure_cwd(session)
@@ -1193,6 +1275,7 @@ def _tui(stdscr, all_sessions):
     selected     = 0
     scroll_off   = 0
     search_mode  = False
+    is_deep_search = False
     search_query = ""
     pending_action = None   # sesión a procesar fuera de curses
 
@@ -1228,6 +1311,7 @@ def _tui(stdscr, all_sessions):
 
         cur_session = filtered[selected] if filtered else None
 
+        list_win.is_deep_search = is_deep_search
         _draw_list_panel(list_win, filtered, selected, scroll_off, search_query)
         _draw_preview_panel(prev_win, cur_session)
 
@@ -1245,15 +1329,19 @@ def _tui(stdscr, all_sessions):
             elif key in (curses.KEY_BACKSPACE, 127, 8):
                 search_query = search_query[:-1]
                 q = search_query.lower()
-                filtered  = [s for s in sessions if q in s.get("title", "").lower()
-                             or q in s.get("cwd", "").lower()] if q else sessions[:]
+                if q:
+                    filtered = search_in_content(sessions, q) if is_deep_search else [s for s in sessions if q in s.get("title", "").lower() or q in s.get("cwd", "").lower()]
+                else:
+                    filtered = sessions[:]
                 selected  = 0
                 scroll_off = 0
             elif 32 <= key <= 126:
                 search_query += chr(key)
                 q = search_query.lower()
-                filtered  = [s for s in sessions if q in s.get("title", "").lower()
-                             or q in s.get("cwd", "").lower()]
+                if is_deep_search:
+                    filtered = search_in_content(sessions, q)
+                else:
+                    filtered = [s for s in sessions if q in s.get("title", "").lower() or q in s.get("cwd", "").lower()]
                 selected  = 0
                 scroll_off = 0
             continue
@@ -1279,8 +1367,17 @@ def _tui(stdscr, all_sessions):
         elif key == curses.KEY_END or key == ord('G'):
             selected = max(0, len(filtered) - 1)
 
+        elif key == ord('s'):
+            search_mode  = True
+            is_deep_search = True
+            search_query = ""
+            filtered     = sessions[:]
+            selected     = 0
+            scroll_off   = 0
+
         elif key == ord('/'):
             search_mode  = True
+            is_deep_search = False
             search_query = ""
             filtered     = sessions[:]
             selected     = 0
