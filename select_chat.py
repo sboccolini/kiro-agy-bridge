@@ -718,28 +718,15 @@ def build_kiro_context(session) -> str:
     header = f"[CONTEXTO: Esta conversación fue iniciada en Kiro. Historial original: {total} mensajes. Continuá desde aquí.]\n\n"
     footer = "[FIN DEL CONTEXTO — Seguí la conversación desde aquí. No expliques este mensaje, simplemente continuá.]"
 
-    safe_limit = 80_000
     blocks = []
-    current_len = len(header.encode('utf-8')) + len(footer.encode('utf-8'))
 
-    # Procesar desde los más recientes hacia atrás
-    for role, text in reversed(msgs):
+    for role, text in msgs:
         if len(text) > MAX_MSG_CHARS:
             text = text[:MAX_MSG_CHARS] + f"\n... [truncado, {len(text) - MAX_MSG_CHARS} caracteres más]"
         
         block = f"### {role}:\n{text}\n\n"
-        block_len = len(block.encode('utf-8'))
-        
-        if current_len + block_len > safe_limit:
-            blocks.append(f"... [Se omitieron {total - len(blocks)} mensajes más antiguos por límite de sistema] ...\n\n")
-            break
-            
         blocks.append(block)
-        current_len += block_len
 
-    # Restaurar orden cronológico
-    blocks.reverse()
-    
     return header + "".join(blocks) + footer
 
 def launch_agy(conv_id, cwd, new_session=False, context_prompt="", has_real_agy=False):
@@ -760,12 +747,27 @@ def launch_agy(conv_id, cwd, new_session=False, context_prompt="", has_real_agy=
     if new_session:
         print(f"{C_GREEN}Iniciando nueva sesión con Agy en {cwd}...{C_RESET}\n")
         args = ["agy"]
-    elif context_prompt and has_real_agy:
-        print(f"{C_GREEN}Reanudando {conv_id[:8]}... con Agy (+ contexto de Kiro)...{C_RESET}\n")
-        args = ["agy", "--conversation", conv_id, "--prompt-interactive", context_prompt]
     elif context_prompt:
-        print(f"{C_GREEN}Abriendo en Agy con historial completo de Kiro...{C_RESET}\n")
-        args = ["agy", "--prompt-interactive", context_prompt]
+        # Escribir contexto a archivo temporal para evitar problemas de tamaño
+        import tempfile
+        ctx_file = os.path.join(tempfile.gettempdir(), f"kiro_ctx_{conv_id[:8]}.md")
+        with open(ctx_file, "w", encoding="utf-8") as f:
+            f.write(context_prompt)
+        
+        short_prompt = (
+            f"[CONTEXTO IMPORTANTE] Leé el archivo {ctx_file} que contiene el historial "
+            f"completo de una conversación previa de Kiro. Usá view_file para leerlo. "
+            f"Una vez que lo hayas leído, respondé brevemente confirmando que tenés el contexto "
+            f"y esperá las instrucciones del usuario. No expliques este mensaje, simplemente "
+            f"continuá la conversación."
+        )
+        
+        if has_real_agy:
+            print(f"{C_GREEN}Reanudando {conv_id[:8]}... con Agy (+ contexto de Kiro)...{C_RESET}\n")
+            args = ["agy", "--conversation", conv_id, "--prompt-interactive", short_prompt]
+        else:
+            print(f"{C_GREEN}Abriendo en Agy con historial completo de Kiro...{C_RESET}\n")
+            args = ["agy", "--prompt-interactive", short_prompt]
     else:
         print(f"{C_GREEN}Reanudando conversación {conv_id} con Agy en {cwd}...{C_RESET}\n")
         args = ["agy", "--conversation", conv_id]
