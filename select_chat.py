@@ -748,24 +748,27 @@ def launch_agy(conv_id, cwd, new_session=False, context_prompt="", has_real_agy=
         print(f"{C_GREEN}Iniciando nueva sesión con Agy en {cwd}...{C_RESET}\n")
         args = ["agy"]
     elif context_prompt:
-        # Escribir contexto a archivo temporal para evitar problemas de tamaño
+        # Escribir contexto a archivo temporal para referencia
         import tempfile
         ctx_file = os.path.join(tempfile.gettempdir(), f"kiro_ctx_{conv_id[:8]}.md")
         with open(ctx_file, "w", encoding="utf-8") as f:
             f.write(context_prompt)
         
-        short_prompt = (
-            f"[CONTEXTO IMPORTANTE] Leé el archivo {ctx_file} que contiene el historial "
-            f"completo de una conversación previa de Kiro. Usá view_file para leerlo. "
-            f"Una vez que lo hayas leído, respondé brevemente confirmando que tenés el contexto "
-            f"y esperá las instrucciones del usuario. No expliques este mensaje, simplemente "
-            f"continuá la conversación."
-        )
-        
         if has_real_agy:
-            print(f"{C_GREEN}Reanudando {conv_id[:8]}... con Agy (+ contexto de Kiro)...{C_RESET}\n")
-            args = ["agy", "--conversation", conv_id, "--prompt-interactive", short_prompt]
+            # Ya tiene historial real en Agy → reanudar sin inyectar prompt
+            # (combinar --conversation + --prompt-interactive causa errores del servidor)
+            print(f"{C_GREEN}Reanudando {conv_id[:8]}... con Agy...{C_RESET}")
+            print(f"{C_GRAY}  Contexto de Kiro guardado en: {ctx_file}{C_RESET}\n")
+            args = ["agy", "--conversation", conv_id]
         else:
+            # Solo en Kiro → abrir nueva sesión con prompt corto que apunta al archivo
+            short_prompt = (
+                f"[CONTEXTO IMPORTANTE] Leé el archivo {ctx_file} que contiene el historial "
+                f"completo de una conversación previa de Kiro. Usá view_file para leerlo. "
+                f"Una vez que lo hayas leído, respondé brevemente confirmando que tenés el contexto "
+                f"y esperá las instrucciones del usuario. No expliques este mensaje, simplemente "
+                f"continuá la conversación."
+            )
             print(f"{C_GREEN}Abriendo en Agy con historial completo de Kiro...{C_RESET}\n")
             args = ["agy", "--prompt-interactive", short_prompt]
     else:
