@@ -684,43 +684,84 @@ MAX_MSG_CHARS = 4000  # límite por mensaje (aumentado para contexto completo)
 
 def build_kiro_context(session) -> str:
     """
-    Construye un texto resumen del chat de Kiro para inyectar como contexto
-    en Agy via --prompt-interactive. Incluye los últimos N mensajes.
+    Construye un texto resumen del chat para inyectar como contexto en Agy.
+    Lee de AMBAS fuentes (Kiro JSONL y Agy transcript) y combina los mensajes.
     """
     conv_id = session["id"]
-    kiro_jsonl = os.path.join(KIRO_SESSIONS_DIR, f"{conv_id}.jsonl")
-    if not os.path.isfile(kiro_jsonl):
-        return ""
-
     msgs = []
-    with open(kiro_jsonl, "r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                d    = json.loads(line)
-                kind = d.get("kind")
-                if kind == "Prompt":
-                    parts = [c.get("data", "") for c in d.get("data", {}).get("content", []) if c.get("kind") == "text"]
-                    text  = "".join(parts).strip()
-                    if text:
-                        msgs.append(("Usuario", text))
-                elif kind == "AssistantMessage":
-                    parts = [c.get("data", "") for c in d.get("data", {}).get("content", []) if c.get("kind") == "text"]
-                    text  = "".join(parts).strip()
-                    if text and "Tool uses were interrupted" not in text:
-                        msgs.append(("Asistente", text))
-            except Exception:
-                pass
+    sources_used = []
+
+    # 1. Leer mensajes de Kiro JSONL
+    kiro_jsonl = os.path.join(KIRO_SESSIONS_DIR, f"{conv_id}.jsonl")
+    if os.path.isfile(kiro_jsonl):
+        with open(kiro_jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    d    = json.loads(line)
+                    kind = d.get("kind")
+                    if kind == "Prompt":
+                        parts = [c.get("data", "") for c in d.get("data", {}).get("content", []) if c.get("kind") == "text"]
+                        text  = "".join(parts).strip()
+                        if text:
+                            msgs.append(("Usuario", text, "kiro"))
+                    elif kind == "AssistantMessage":
+                        parts = [c.get("data", "") for c in d.get("data", {}).get("content", []) if c.get("kind") == "text"]
+                        text  = "".join(parts).strip()
+                        if text and "Tool uses were interrupted" not in text:
+                            msgs.append(("Asistente", text, "kiro"))
+                except Exception:
+                    pass
+        if msgs:
+            sources_used.append(f"Kiro ({len(msgs)} msgs)")
+
+    # 2. Leer mensajes de Agy transcript (agregar los que no vengan de Kiro)
+    agy_transcript = os.path.join(AGY_BRAIN_DIR, conv_id, ".system_generated", "logs", "transcript.jsonl")
+    if os.path.isfile(agy_transcript):
+        agy_msgs = []
+        with open(agy_transcript, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                    t = d.get("type")
+                    if t == "USER_INPUT":
+                        content = d.get("content", "")
+                        if "<USER_REQUEST>" in content:
+                            try:
+                                content = content.split("<USER_REQUEST>")[1].split("</USER_REQUEST>")[0]
+                            except Exception:
+                                pass
+                        content = content.strip()
+                        if content and "[CONTEXTO" not in content[:20]:
+                            agy_msgs.append(("Usuario", content, "agy"))
+                    elif t == "PLANNER_RESPONSE":
+                        if not d.get("tool_calls"):
+                            content = d.get("content", "").strip()
+                            if content and "Tool uses were interrupted" not in content:
+                                agy_msgs.append(("Asistente", content, "agy"))
+                except Exception:
+                    pass
+        if agy_msgs:
+            sources_used.append(f"Agy ({len(agy_msgs)} msgs)")
+            # Si ya tenemos msgs de Kiro, agregar los de Agy al final (son posteriores)
+            # Si no hay de Kiro, usar solo los de Agy
+            if msgs:
+                msgs.append(("--- CONTINUACIÓN EN AGY ---", "", "separator"))
+            msgs.extend(agy_msgs)
 
     if not msgs:
         return ""
 
-    total = len(msgs)
-    header = f"[CONTEXTO: Esta conversación fue iniciada en Kiro. Historial original: {total} mensajes. Continuá desde aquí.]\n\n"
+    total = len([m for m in msgs if m[2] != "separator"])
+    src_str = " + ".join(sources_used) if sources_used else "desconocido"
+    header = f"[CONTEXTO: Historial completo de la conversación. Fuentes: {src_str}. Total: {total} mensajes. Continuá desde aquí.]\n\n"
     footer = "[FIN DEL CONTEXTO — Seguí la conversación desde aquí. No expliques este mensaje, simplemente continuá.]"
 
     blocks = []
 
-    for role, text in msgs:
+    for role, text, source in msgs:
+        if source == "separator":
+            blocks.append(f"\n---\n{role}\n---\n\n")
+            continue
         if len(text) > MAX_MSG_CHARS:
             text = text[:MAX_MSG_CHARS] + f"\n... [truncado, {len(text) - MAX_MSG_CHARS} caracteres más]"
         
